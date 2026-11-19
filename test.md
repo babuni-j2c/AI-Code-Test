@@ -1,54 +1,68 @@
-# Configure Loki for cluster logging 
+# Configure OpenShift Logging with LokiStack and OpenShift Data Foundation
 
+> **Technical guide | OpenShift Logging 6.x | LokiStack | OpenShift Data Foundation (ODF)**
+>
+> This guide documents an example deployment that uses ODF NooBaa object storage for Loki log data and the OpenShift Logging 6.x APIs for log collection and visualization.
 
-https://access.redhat.com/articles/7089751
+## Overview
 
-https://access.redhat.com/articles/6991632
+OpenShift Logging can collect application, infrastructure, and audit logs. LokiStack provides the log storage backend, while OpenShift Data Foundation (ODF) can provide S3-compatible object storage through NooBaa.
 
-https://access.redhat.com/articles/7006275
+This walkthrough covers:
 
-https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/logging/logging-6-2
+1. Installing the required operators.
+2. Creating an ObjectBucketClaim (OBC) in ODF.
+3. Creating the Loki object-storage secret.
+4. Deploying a LokiStack instance.
+5. Configuring the log collector and ClusterLogForwarder.
+6. Enabling the OpenShift console logging view.
+7. Validating log collection and access.
 
-Labels;
+## Architecture
 
+```text
+OpenShift workloads and nodes
+            |
+            v
+   OpenShift Logging Collector
+       (Vector / CLF)
+            |
+            v
+      ClusterLogForwarder
+            |
+            v
+         LokiStack
+            |
+            v
+   ODF NooBaa Object Storage
+            |
+            v
+      S3-compatible bucket
 
-https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/logging/logging-6-0#filters-and-pipeline-configuration
-
-https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/logging/logging-6-0#log6x-input-spec-filter-labels-expressions_logging-6x
-
-https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/logging/logging-6-0#log6x-input-spec-filter-namespace-container_logging-6x
-
-
-https://access.redhat.com/solutions/5928241?band=se&seSessionId=1fe11905-f080-4007-94d6-269150e36d76&seSource=Recommendation&seResourceOriginID=8e79a701-f59a-4bd6-8166-cfc1b0e0f812
-
-https://access.redhat.com/articles/7020079?band=se&seSessionId=1fe11905-f080-4007-94d6-269150e36d76&seSource=Recommendation&seResourceOriginID=8e79a701-f59a-4bd6-8166-cfc1b0e0f812
-
-
-
-# OCP Logging stack configuration with Loki  
-
-https://docs.openshift.com/container-platform/4.14/logging/log_storage/installing-log-storage.html
-
-https://docs.openshift.com/container-platform/4.15/observability/logging/log_storage/installing-log-storage.html
-
-https://docs.openshift.com/container-platform/4.15/observability/logging/log_storage/cluster-logging-loki.html
-
-# OCP Logging stack configuration with Loki 
-
-https://docs.openshift.com/container-platform/4.17/observability/logging/logging-6.1/log6x-about-6.1.html
-
-
-# OCP 4.16 or above version::
-
-
-```
-1) Install logging operator
-2) Install loki operator
+OpenShift Console <---- UIPlugin / LokiStack
 ```
 
-3) Create a OBC
-   
-```
+## Prerequisites
+
+Before starting, make sure you have:
+
+- An OpenShift Container Platform cluster with administrator access.
+- The OpenShift CLI (`oc`) installed and authenticated.
+- OpenShift Data Foundation deployed and configured for object storage.
+- The Red Hat OpenShift Logging Operator installed.
+- The Loki Operator installed.
+- The Cluster Observability Operator installed if you want the console logging view.
+- Sufficient storage capacity and a suitable block StorageClass for Loki's temporary storage.
+
+> **Version note:** OpenShift Logging has an independent release cycle from OpenShift Container Platform. Confirm the supported operator versions and APIs for your cluster before applying these examples. The modern examples below use the `observability.openshift.io/v1` ClusterLogForwarder API used by Logging 6.x. They are not interchangeable with the legacy `logging.openshift.io` ClusterLogging and ClusterLogForwarder APIs.
+
+## 1. Create an ObjectBucketClaim
+
+Create an OBC in the `openshift-logging` namespace. ODF NooBaa provisions an S3-compatible bucket and generates the associated configuration and credentials.
+
+Save the following manifest as `obc-loki.yaml`:
+
+```yaml
 apiVersion: objectbucket.io/v1alpha1
 kind: ObjectBucketClaim
 metadata:
@@ -59,117 +73,225 @@ spec:
   storageClassName: openshift-storage.noobaa.io
 ```
 
-4) Get the OBC details
+Apply the manifest:
 
+```bash
+oc apply -f obc-loki.yaml
+oc get obc -n openshift-logging
 ```
-$ BUCKET_HOST=$(oc get -n openshift-logging \
-  configmap loki-bucket-odf -o jsonpath='{.data.BUCKET_HOST}'); \
-  BUCKET_NAME=$(oc get -n openshift-logging configmap loki-bucket-odf \
-  -o jsonpath='{.data.BUCKET_NAME}'); \
-  BUCKET_PORT=$(oc get -n openshift-logging configmap loki-bucket-odf \
-  -o jsonpath='{.data.BUCKET_PORT}'); \
-  ACCESS_KEY_ID=$(oc get -n openshift-logging secret loki-bucket-odf \
-  -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d); \
-  SECRET_ACCESS_KEY=$(oc get -n openshift-logging secret loki-bucket-odf \
+
+Wait until the ObjectBucketClaim is in the `Bound` state before continuing.
+
+## 2. Retrieve the bucket details and credentials
+
+The OBC creates a ConfigMap containing the bucket endpoint information and a Secret containing the access credentials.
+
+Run the following commands to retrieve the values:
+
+```bash
+BUCKET_HOST=$(oc get -n openshift-logging configmap loki-bucket-odf \
+  -o jsonpath='{.data.BUCKET_HOST}')
+
+BUCKET_NAME=$(oc get -n openshift-logging configmap loki-bucket-odf \
+  -o jsonpath='{.data.BUCKET_NAME}')
+
+BUCKET_PORT=$(oc get -n openshift-logging configmap loki-bucket-odf \
+  -o jsonpath='{.data.BUCKET_PORT}')
+
+ACCESS_KEY_ID=$(oc get -n openshift-logging secret loki-bucket-odf \
+  -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+
+SECRET_ACCESS_KEY=$(oc get -n openshift-logging secret loki-bucket-odf \
   -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
 ```
-5) Create a secret using above details.
-```
+
+Keep the credentials secure. Do not print them in terminal recordings, commit them to Git, or include them in screenshots.
+
+## 3. Create the Loki object-storage secret
+
+Create a Secret containing the ODF bucket details. The secret name used here is `logging-loki-odf`.
+
+```bash
 oc create secret generic logging-loki-odf \
   -n openshift-logging \
-  --from-literal=access_key_id=${ACCESS_KEY_ID} \
-  --from-literal=access_key_secret=${SECRET_ACCESS_KEY} \
-  --from-literal=bucketnames=${BUCKET_NAME} \
-  --from-literal=endpoint=https://${BUCKET_HOST}:${BUCKET_PORT}
+  --from-literal=access_key_id="${ACCESS_KEY_ID}" \
+  --from-literal=access_key_secret="${SECRET_ACCESS_KEY}" \
+  --from-literal=bucketnames="${BUCKET_NAME}" \
+  --from-literal=endpoint="https://${BUCKET_HOST}:${BUCKET_PORT}"
 ```
-6) Configure Loki Instance 
 
+Verify that the Secret exists without displaying its contents:
+
+```bash
+oc get secret logging-loki-odf -n openshift-logging
 ```
+
+## 4. Deploy the LokiStack instance
+
+Create a LokiStack custom resource that references the ODF object-storage Secret.
+
+Save the following manifest as `lokistack.yaml`:
+
+```yaml
 apiVersion: loki.grafana.com/v1
 kind: LokiStack
 metadata:
   name: logging-loki
   namespace: openshift-logging
 spec:
-  size: 1x.demo   ##Based on your requirement change the size
+  size: 1x.demo
   storage:
+    schemas:
+      - effectiveDate: "2023-10-15"
+        version: v13
     secret:
       name: logging-loki-odf
       type: s3
-    tls:
-      caName: openshift-service-ca.crt  ## oc get cm you will get this 
-  storageClassName: ocs-external-storagecluster-ceph-rbd
+  storageClassName: <block-storage-class>
   tenants:
     mode: openshift-logging
 ```
 
-7) Create cluster loggin instance
+Replace `<block-storage-class>` with a suitable block StorageClass available in your cluster. Check available StorageClasses with:
 
-```
-apiVersion: logging.openshift.io/v1
-kind: ClusterLogging
-metadata:
-  name: instance
-  namespace: openshift-logging
-spec:
-  managementState: Managed
-  logStore:
-    type: lokistack
-    lokistack:
-      name: logging-loki
-  collection:
-    type: vector
-  visualization:
-    type: ocp-console    ##Kibana and ocp-console both are supported if you are working on Elasticksearch
+```bash
+oc get storageclass
 ```
 
-8) Enable the console pluggin, if not enabled during the logging operator installation
+The `1x.demo` size is intended for demonstration and testing, not production use. Select a supported production size based on your expected ingestion volume, query load, and availability requirements.
 
-9) Validate the logs
-```
-   > OpenShift Web UI > Observe > logs
-                                      > Infrastructure / Application / Audit (Default Audit logs are not available)
-```
-10) Configure Audit logs
+Apply the manifest and check the LokiStack:
 
+```bash
+oc apply -f lokistack.yaml
+oc get lokistack -n openshift-logging
+oc get pods -n openshift-logging
 ```
-apiVersion: logging.openshift.io/v1
+
+Wait for the LokiStack components to become ready before configuring log forwarding.
+
+## 5. Create the collector service account and grant permissions
+
+For Logging 6.x, create a service account for the collector and grant only the log collection permissions required by your environment.
+
+```bash
+oc create serviceaccount collector -n openshift-logging
+
+oc adm policy add-cluster-role-to-user collect-application-logs \
+  system:serviceaccount:openshift-logging:collector
+
+oc adm policy add-cluster-role-to-user collect-infrastructure-logs \
+  system:serviceaccount:openshift-logging:collector
+```
+
+If you also need audit logs, grant the audit collection role:
+
+```bash
+oc adm policy add-cluster-role-to-user collect-audit-logs \
+  system:serviceaccount:openshift-logging:collector
+```
+
+Grant only the roles required for the log types you intend to collect.
+
+## 6. Configure the ClusterLogForwarder
+
+With Logging 6.x, use the `observability.openshift.io/v1` API for the ClusterLogForwarder.
+
+Save the following manifest as `clusterlogforwarder.yaml`:
+
+```yaml
+apiVersion: observability.openshift.io/v1
 kind: ClusterLogForwarder
 metadata:
-  name: instance
+  name: collector
   namespace: openshift-logging
 spec:
+  serviceAccount:
+    name: collector
+  outputs:
+    - name: lokistack-out
+      type: lokiStack
+      lokiStack:
+        target:
+          name: logging-loki
+          namespace: openshift-logging
+        authentication:
+          token:
+            from: serviceAccount
+      tls:
+        ca:
+          key: service-ca.crt
+          configMapName: openshift-service-ca.crt
   pipelines:
-  - name: all-to-default
-    inputRefs:
-    - infrastructure
-    - application
-    - audit
-    outputRefs:
-    - default
+    - name: default-logstore
+      inputRefs:
+        - application
+        - infrastructure
+        # Add audit only if the collector has the required permission.
+        # - audit
+      outputRefs:
+        - lokistack-out
 ```
 
-11) Validate the logs
+Apply the manifest:
+
+```bash
+oc apply -f clusterlogforwarder.yaml
+oc get clusterlogforwarder -n openshift-logging
+oc describe clusterlogforwarder collector -n openshift-logging
 ```
-   > OpenShift Web UI > Observe > logs
-                                      > Infrastructure / Application / Audit 
-```
 
+Check the ClusterLogForwarder conditions and collector pod status. A ready custom resource alone does not replace checking the collector logs and confirming that data reaches LokiStack.
 
+## 7. Enable the logging view in the OpenShift console
 
+If the logging view is not already enabled, create a UIPlugin resource.
 
+Save the following manifest as `uiplugin-logging.yaml`:
 
-# Advance Configuration.
-
-
-
-# Loki Instance
-```
-apiVersion: loki.grafana.com/v1
-kind: LokiStack
+```yaml
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
 metadata:
-  name: logging-loki
-  namespace: openshift-logging
+  name: logging
+spec:
+  type: Logging
+  logging:
+    lokiStack:
+      name: logging-loki
+```
+
+Apply the manifest:
+
+```bash
+oc apply -f uiplugin-logging.yaml
+oc get uiplugin logging
+```
+
+The UIPlugin API version and availability depend on the installed Cluster Observability Operator release. Verify compatibility with your cluster before applying it.
+
+## 8. Validate log collection
+
+Check the relevant resources:
+
+```bash
+oc get pods -n openshift-logging
+oc get lokistack -n openshift-logging
+oc get clusterlogforwarder -n openshift-logging
+oc get uiplugin logging
+```
+
+Then open the OpenShift web console and navigate to **Observe → Logs**. Select the relevant log type and query the logs.
+
+By default, application and infrastructure logs are included in the example pipeline. Audit logs require the additional collector permission and the `audit` input to be enabled.
+
+## 9. Advanced configuration: retention
+
+Loki supports stream-based retention policies. The following example illustrates a seven-day retention period for logs matching the `build-ci` namespace selector, while the global retention period is 30 days.
+
+Review the retention configuration against your Loki Operator version and operational requirements before applying it:
+
+```yaml
 spec:
   limits:
     global:
@@ -179,91 +301,44 @@ spec:
           - selector: '{kubernetes_namespace_name="build-ci"}'
             priority: 1
             days: 7
-  size: 1x.demo
-  storage:
-    tls:
-      caName: openshift-service-ca.crt
-    secret:
-      name: logging-loki-odf
-      type: s3
-  storageClassName: ocs-external-storagecluster-ceph-rbd
-  tenants:
-    mode: openshift-logging
 ```
 
+Retention policies must be planned together with object-storage lifecycle policies. Confirm that the resulting retention behavior meets your data governance and compliance requirements.
 
+## Troubleshooting checklist
 
+| Symptom | What to check |
+|---|---|
+| OBC is not Bound | ODF object-storage health, NooBaa, and the OBC StorageClass |
+| LokiStack pods are not ready | LokiStack events, storage class, resource requests, and object-storage credentials |
+| Collector pods are failing | ClusterLogForwarder conditions, service-account permissions, and collector logs |
+| No logs appear in the console | ClusterLogForwarder pipeline, LokiStack readiness, UIPlugin status, and user log-view permissions |
+| S3 connection or authentication errors | Bucket endpoint, bucket name, Secret keys, and ODF object-storage health |
 
-# CL Instance Configuration
+Useful commands:
 
-```
-apiVersion: logging.openshift.io/v1
-kind: ClusterLogging
-metadata:
-  name: instance
-  namespace: openshift-logging
-spec:
-  managementState: Managed
-  logStore:
-    type: lokistack
-    lokistack:
-      name: logging-loki
-  collection:
-    type: vector
-  visualization:
-    type: ocp-console
+```bash
+oc describe obc loki-bucket-odf -n openshift-logging
+oc describe lokistack logging-loki -n openshift-logging
+oc describe clusterlogforwarder collector -n openshift-logging
+oc get events -n openshift-logging --sort-by=.lastTimestamp
 ```
 
+## Important version and support considerations
 
+- OpenShift Logging and OpenShift Container Platform have separate release cycles. Confirm the supported operator and platform combination.
+- Logging 6.x uses the `observability.openshift.io/v1` ClusterLogForwarder API. Do not copy legacy `logging.openshift.io` ClusterLogging or ClusterLogForwarder examples into a Logging 6.x deployment.
+- `1x.demo` is for demonstration only. Size production Loki deployments according to the official sizing guidance.
+- The managed Loki deployment is intended for short-term log storage. Plan external retention and archival separately when long-term retention is required.
+- These manifests are examples. Validate the API fields, StorageClass, operator versions, and resource sizing in a non-production environment before using them in production.
 
+## References
 
-# CLF Instance Configuration
+- [Red Hat OpenShift Logging 6.2 – Configuring logging](https://docs.redhat.com/en/documentation/red_hat_openshift_logging/6.2/html-single/configuring_logging/index)
+- [Red Hat OpenShift Logging 6.2 – Installing logging](https://docs.redhat.com/en/documentation/red_hat_openshift_logging/6.2/html-single/installing_logging/index)
+- [OpenShift Container Platform 4.16 – Logging](https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html-single/logging/logging)
+- [Red Hat Knowledgebase – Logging articles](https://access.redhat.com/)
 
-```
-apiVersion: logging.openshift.io/v1
-kind: ClusterLogForwarder
-metadata:
-  name: instance
-  namespace: openshift-logging
-spec:
-  inputs:
-    - name: production-apps
-      application:
-        selector:
-          matchLabels:
-            environment: production
-    - name: ci
-      application:
-        namespaces:
-        - build-ci
-  outputs:
-    - name: audit-syslog
-      type: syslog
-      url: tcp://utility.lab.example.com:514
-      syslog:
-        msgID: audit
-        appName: ocp-lab
-        facility: user
-        procID: vector
-        rfc: RFC5424
-        severity: informational
-  pipelines:
-    - name: to-syslog
-      inputRefs:
-        - audit
-      outputRefs:
-        - audit-syslog
-    - name: to-loki
-      inputRefs:
-        - infrastructure
-        - ci
-        - production-apps
-      outputRefs:
-        - default
-```
+---
 
-```
-$ oc adm policy add-cluster-role-to-group cluster-logging-application-view ocpdevs
-```
-
-
+**Author's note:** This guide is based on a lab-oriented implementation pattern. Always verify the configuration against the exact OpenShift and operator versions running in your environment.
