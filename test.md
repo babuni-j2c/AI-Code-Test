@@ -4,6 +4,20 @@
 >
 > This guide documents an example deployment that uses ODF NooBaa object storage for Loki log data and the OpenShift Logging 6.x APIs for log collection and visualization.
 
+> [!NOTE]
+> **Lab reference:** The commands and manifests are examples. Confirm operator compatibility and validate them in a non-production cluster before adapting them for production.
+
+## Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Deployment workflow](#deployment-workflow)
+- [Implementation](#implementation)
+- [Troubleshooting](#troubleshooting-checklist)
+- [Version and support considerations](#important-version-and-support-considerations)
+- [References](#references)
+
 ## Overview
 
 OpenShift Logging can collect application, infrastructure, and audit logs. LokiStack provides the log storage backend, while OpenShift Data Foundation (ODF) can provide S3-compatible object storage through NooBaa.
@@ -20,27 +34,48 @@ This walkthrough covers:
 
 ## Architecture
 
-```text
-OpenShift workloads and nodes
-            |
-            v
-   OpenShift Logging Collector
-       (Vector / CLF)
-            |
-            v
-      ClusterLogForwarder
-            |
-            v
-         LokiStack
-            |
-            v
-   ODF NooBaa Object Storage
-            |
-            v
-      S3-compatible bucket
+The following diagram shows the main data path and the relationship between the OpenShift console, LokiStack, and ODF object storage.
 
-OpenShift Console <---- UIPlugin / LokiStack
+```mermaid
+flowchart TB
+    subgraph SOURCES[OpenShift cluster]
+        APP[Application logs]
+        INF[Infrastructure logs]
+        AUD[Audit logs - optional]
+    end
+
+    subgraph LOGGING[OpenShift Logging 6.x]
+        VEC[Vector collector]
+        CLF[ClusterLogForwarder]
+    end
+
+    subgraph STORAGE[Logging storage]
+        LOKI[LokiStack]
+        ODF[ODF NooBaa object storage]
+        BUCKET[(S3-compatible bucket)]
+    end
+
+    UI[OpenShift web console]
+    PLUGIN[Cluster Observability UIPlugin]
+
+    APP --> VEC
+    INF --> VEC
+    AUD -. optional .-> VEC
+    VEC --> CLF
+    CLF --> LOKI
+    LOKI --> ODF
+    ODF --> BUCKET
+    UI --> PLUGIN
+    PLUGIN --> LOKI
 ```
+
+| Component | Responsibility |
+|---|---|
+| Vector | Collects logs from cluster workloads and nodes |
+| ClusterLogForwarder | Defines log inputs, outputs, and pipelines |
+| LokiStack | Stores and indexes log metadata for querying |
+| ODF NooBaa | Provides S3-compatible object storage |
+| UIPlugin | Enables the logging experience in the OpenShift console |
 
 ## Prerequisites
 
@@ -55,6 +90,30 @@ Before starting, make sure you have:
 - Sufficient storage capacity and a suitable block StorageClass for Loki's temporary storage.
 
 > **Version note:** OpenShift Logging has an independent release cycle from OpenShift Container Platform. Confirm the supported operator versions and APIs for your cluster before applying these examples. The modern examples below use the `observability.openshift.io/v1` ClusterLogForwarder API used by Logging 6.x. They are not interchangeable with the legacy `logging.openshift.io` ClusterLogging and ClusterLogForwarder APIs.
+
+## Deployment workflow
+
+Use this high-level workflow to track the implementation from storage provisioning through log validation.
+
+```mermaid
+flowchart TD
+    A([Start]) --> B[Confirm cluster and operator versions]
+    B --> C[Create ODF ObjectBucketClaim]
+    C --> D[Retrieve bucket endpoint and credentials]
+    D --> E[Create Loki storage Secret]
+    E --> F[Deploy LokiStack]
+    F --> G[Create collector service account and RBAC]
+    G --> H[Configure ClusterLogForwarder]
+    H --> I[Enable console UIPlugin]
+    I --> J[Validate pods, forwarding, and queries]
+    J --> K([Logging pipeline ready])
+```
+
+## Implementation
+
+The following steps build the logging stack in sequence. Complete each validation step before moving to the next component.
+
+### Step 1 — Provision object storage
 
 ## 1. Create an ObjectBucketClaim
 
@@ -126,6 +185,8 @@ Verify that the Secret exists without displaying its contents:
 oc get secret logging-loki-odf -n openshift-logging
 ```
 
+### Step 2 — Configure Loki storage
+
 ## 4. Deploy the LokiStack instance
 
 Create a LokiStack custom resource that references the ODF object-storage Secret.
@@ -169,6 +230,8 @@ oc get pods -n openshift-logging
 ```
 
 Wait for the LokiStack components to become ready before configuring log forwarding.
+
+### Step 3 — Configure log collection and forwarding
 
 ## 5. Create the collector service account and grant permissions
 
@@ -243,6 +306,8 @@ oc describe clusterlogforwarder collector -n openshift-logging
 
 Check the ClusterLogForwarder conditions and collector pod status. A ready custom resource alone does not replace checking the collector logs and confirming that data reaches LokiStack.
 
+### Step 4 — Enable visualization and validate
+
 ## 7. Enable the logging view in the OpenShift console
 
 If the logging view is not already enabled, create a UIPlugin resource.
@@ -306,6 +371,19 @@ spec:
 Retention policies must be planned together with object-storage lifecycle policies. Confirm that the resulting retention behavior meets your data governance and compliance requirements.
 
 ## Troubleshooting checklist
+
+Use this quick decision path to isolate common deployment issues:
+
+```mermaid
+flowchart TD
+    A[Logs not visible] --> B{Collector healthy?}
+    B -- No --> C[Check CLF conditions, pods, and RBAC]
+    B -- Yes --> D{LokiStack healthy?}
+    D -- No --> E[Check LokiStack events, PVCs, and object storage]
+    D -- Yes --> F{UIPlugin and user access ready?}
+    F -- No --> G[Check UIPlugin status and log-view permissions]
+    F -- Yes --> H[Check pipeline inputs, labels, and query time range]
+```
 
 | Symptom | What to check |
 |---|---|
