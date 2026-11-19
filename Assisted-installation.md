@@ -4,9 +4,9 @@
 
 ## Introduction
 
-This article documents a hands-on workflow for preparing Host Inventory and installing OpenShift clusters through the Assisted Installer workflow available with Red Hat Advanced Cluster Management (RHACM). It covers connected and disconnected environments, single-node and multi-node deployments, local RHCOS ISO hosting, Quay mirror-registry configuration, registry trust, and troubleshooting.
+This article documents a hands-on workflow for preparing Host Inventory and installing OpenShift clusters through the Assisted Installer workflow available with Red Hat Advanced Cluster Management (RHACM).
 
-The examples and observations are based on a lab environment. They retain the original configuration values and practical troubleshooting experience. Replace example hostnames, IP addresses, registry paths, versions, and credentials with values appropriate for your environment.
+The examples and observations are based on a lab environment. They retain the original configuration values and practical troubleshooting experience.
 
 > [!IMPORTANT]
 > Host Inventory, AgentServiceConfig, ClusterImageSet, and mirror-registry behavior can vary by RHACM, multicluster engine (MCE), OpenShift, and operator release. Verify the APIs and supported configuration for your installed versions before applying these examples.
@@ -31,7 +31,7 @@ The examples and observations are based on a lab environment. They retain the or
 
 My preferred approach is to create the hosts first and make them available in Host Inventory. Then, select those existing hosts when creating a cluster.
 
-One benefit of this approach is that deleting a cluster does not necessarily require deleting the host records or removing the physical nodes from inventory. Depending on the host lifecycle and the RHACM/MCE release, hosts may be released and made available for another cluster installation.
+One benefit of this approach is that deleting a cluster does not necessarily require deleting the host records or removing the physical nodes from inventory.
 
 > **Verify this behavior:** Cluster deletion, host deprovisioning, and host release are separate lifecycle operations. Confirm the exact host reuse behavior for your RHACM/MCE version before relying on it.
 
@@ -286,7 +286,7 @@ This is a configuration fragment, not a complete AgentServiceConfig manifest. Ad
 The original lab notes describe two approaches:
 
 1. **ImageSetConfiguration workflow:** Create an ImageSetConfiguration and follow the supported OpenShift image-mirroring procedure for the required release and operator content.
-2. **Manual repository workflow:** Create the required organizations and repositories on the destination Quay registry, mirror the images, and verify that the destination paths and digests match the mirror configuration.
+2. **Manual repository workflow:** Create the required organizations and repositories on the destination Quay registry, mirror the images, and verify that the destination paths and digests match.
 
 The manual approach requires careful repository and digest verification. A repository existing in Quay does not necessarily mean that every required image digest has been mirrored successfully.
 
@@ -325,7 +325,7 @@ oc apply -f clusterimageset.yaml
 oc get clusterimagesets
 ~~~
 
-**Important:** The releaseImage value must point to the correct release image in your mirror registry. Confirm the repository path and tag against the content that was actually mirrored. The registry hostname above is an example from the lab; replace it with the correct hostname for your environment.
+**Important:** The releaseImage value must point to the correct release image in your mirror registry. Confirm the repository path and tag against the content that was actually mirrored.
 
 ## 5. Create Host Inventory credentials
 
@@ -349,7 +349,7 @@ The original lab used these example values:
 
 ### 5.1 Add the pull secret and SSH key
 
-- **Pull secret:** For a connected cluster, use the appropriate Red Hat pull secret. For a disconnected cluster, use a pull secret that includes authentication for the mirror registry, as required by your environment.
+- **Pull secret:** For a connected cluster, use the appropriate Red Hat pull secret. For a disconnected cluster, use a pull secret that includes authentication for the.
 - **SSH key:** Add the public SSH key that you want to use for node access.
 
 > **Lab troubleshooting note:** If cluster creation reports image-pull or authentication errors, check whether the pull secret includes credentials for the required registries. The original notes also recommend reviewing the cluster pull secret and global pull-secret configuration. Do not replace global credentials without understanding the impact on other cluster workloads.
@@ -483,7 +483,7 @@ Example image-pull test. Replace the example image and digest with the exact ima
 podman pull quay.example.com/multicluster-engine/assisted-installer-agent-rhel8@sha256:<image-digest>
 ~~~
 
-Check the registry-side and node-side logs as appropriate. In the original lab, the underlying issue was an unhealthy Quay service caused by S3 connectivity problems. Some S3-related pods were not running in the openshift-storage namespace.
+Check the registry-side and node-side logs as appropriate. In the original lab, the underlying issue was an unhealthy Quay service caused by S3 connectivity problems.
 
 **Practical lesson:** A registry endpoint can be reachable while the registry is still unable to serve image content. Check both registry application health and its backing object-storage service.
 
@@ -566,7 +566,7 @@ The following details are intentionally highlighted for verification rather than
 
 1. **RHACM/MCE release compatibility:** Confirm the Host Inventory workflow, AgentServiceConfig fields, and Assisted Installer behavior against the installed release.
 2. **AgentServiceConfig name:** The source notes contain the spelling agant. Use the exact resource name returned by oc get agentserviceconfigs.
-3. **RHCOS image metadata:** Confirm that the ISO URL, openshiftVersion, and version identify a compatible RHCOS image for the target OpenShift release. Do not copy the sample version string without checking it.
+3. **RHCOS image metadata:** Confirm that the ISO URL, openshiftVersion, and version identify a compatible RHCOS image for the target OpenShift release. Do not copy the sample.
 4. **Root filesystem URL:** The example leaves rootFSUrl empty. Confirm whether this is supported for your release and installation workflow.
 5. **Registry ConfigMap schema:** Confirm that ca-bundle.crt and registries.conf are the expected keys for the installed Assisted Service version.
 6. **Registry CA content:** The ConfigMap must contain valid PEM certificate data, not the literal output or command text from openssl s_client.
@@ -575,13 +575,13 @@ The following details are intentionally highlighted for verification rather than
 9. **Image trust ConfigMap name:** The source notes use both registry-cas and private-quay-registry. Ensure the live Image resource references the ConfigMap that actually exists.
 10. **Pull-secret behavior:** Confirm the correct pull-secret requirements for your connected or disconnected topology and RHACM/MCE release.
 11. **Storage values:** The database, system, and image storage values are lab settings. Validate units and sizing for your deployment.
-12. **Example output and digests:** Pod names, timestamps, registry hostnames, and image digests in this document are examples from the lab and should not be treated as current values.
+12. **Example output and digests:** Pod names, timestamps, registry hostnames, and image digests in this document are examples from the lab and should not be treated as.
 
 ## Conclusion
 
 This guide captures a practical Host Inventory and Assisted Installer workflow for connected and disconnected OpenShift environments. It covers Host Inventory preparation, local RHCOS ISO configuration, mirror-registry setup, ClusterImageSet creation, registry trust, and troubleshooting installation failures.
 
-The most important lesson from the disconnected lab is to validate the complete image-delivery path before starting a cluster installation: the required images must be mirrored to the expected repositories, the mirror configuration must point to those paths, and the hub and installation hosts must trust the registry certificate.
+The most important lesson from the disconnected lab is to validate the complete image-delivery path before starting a cluster installation: the required images must be mirrored to the expected repositories, the mirror configuration must point to those paths, and the hub and.
 
 Use the commands and manifests as a record of the lab workflow, then adapt and validate them against the exact RHACM, MCE, OpenShift, and Assisted Installer versions in your environment.
 
